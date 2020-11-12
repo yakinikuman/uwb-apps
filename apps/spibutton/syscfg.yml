@@ -1,0 +1,18 @@
+syscfg.defs:
+    SPITEST_SS_PIN:
+        description: 'SPI slave select pin number'
+        value:  3
+
+    SPITEST_M_NUM:
+        description: 'SPI peripheral number to use for master'
+        value: 1
+
+    SPITEST_S_NUM:
+        description: 'SPI peripheral number to use for slave'
+        value: 1
+
+syscfg.vals:
+    SHELL_TASK: 1
+
+    # Default task settings
+    OS_MAIN_STACK_SIZE: 512
