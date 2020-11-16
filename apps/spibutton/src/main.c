@@ -1,4 +1,3 @@
-
 #include <assert.h>
 #include <string.h>
 #include <os/mynewt.h>
@@ -9,45 +8,15 @@
 #include <os/os.h>
 #include <sysinit/sysinit.h>
 
-
-
-#define BUTTON_INTERRUPT_TASK_PRIO  4
-#define BUTTON_INTERRUPT_TASK_STACK_SZ    512
-
-#define BLINK_LED LED_1
-
-/* SPI Send Task */
-#define SPI_SEND_PRIO (3)
-#define SPI_SEND_STACK_SIZE    OS_STACK_ALIGN(1024)
-struct os_task spi_send_task;
-
-uint8_t btn_cnt;
-
-static void button_interrupt_ev_cb(struct os_event *);
-
-static struct os_eventq button_interrupt_eventq;
-
-static os_stack_t button_interrupt_task_stack[BUTTON_INTERRUPT_TASK_STACK_SZ];
-static struct os_task button_interrupt_task_str;
-
-/* The spi txrx callback */
-struct sblinky_spi_cb_arg
-{
-    int transfers;
-    int txlen;
-    uint32_t tx_rx_bytes;
-};
-struct sblinky_spi_cb_arg spi_cb_obj;
-void *spi_cb_arg;
-
-/* Global spi semaphore */
-struct os_sem g_spi_sem;
-
-#define SPI_BAUDRATE 500
-#define SPI_TXRX_LEN 32
-
-uint8_t g_spi_tx_buf[SPI_TXRX_LEN];
-uint8_t g_spi_rx_buf[SPI_TXRX_LEN];
+// This is a mashup of the Mynewt event queue example
+//   https://mynewt.apache.org/latest/tutorials/os_fundamentals/event_queue.html
+// and apache-mynewt-core/apps/spitest
+// for DWM1001-DEV.
+// Designed for two connected boards, one SPI master and one slave.
+// Set SPI_xx_MASTER in target syscfg.yml to designate master,
+// set SPI_xx_SLAVE in target syscfg.yml to designate slave.
+// On button push, master will toggle LED and send a message via SPI.
+// On SPI message receipt, slave will alter the received message to send out during next SPI transfer.
 
 #if MYNEWT_VAL(SPI_0_MASTER) || MYNEWT_VAL(SPI_1_MASTER) || MYNEWT_VAL(SPI_2_MASTER)
 #define SPI_MASTER 1
@@ -67,36 +36,68 @@ uint8_t g_spi_rx_buf[SPI_TXRX_LEN];
 #error "Cannot be SPI master and slave!"
 #endif
 
+#define TRIGGER_BUTTON BUTTON_2
+#define BUTTON_LED LED_1
+#define SLAVE_LED LED_2
+
+#define SPI_BAUDRATE 500
+#define SPI_TXRX_LEN 32
+
+#define BUTTON_INTERRUPT_TASK_PRIO  5
+#define BUTTON_INTERRUPT_TASK_STACK_SZ    512
+static os_stack_t button_interrupt_task_stack[BUTTON_INTERRUPT_TASK_STACK_SZ];
+static struct os_task button_interrupt_task_str;
+uint8_t btn_cnt;
+
+static void button_interrupt_ev_cb(struct os_event *);
+static struct os_eventq button_interrupt_eventq;
+
+#define SPI_CB_TASK_PRIO  4
+#define SPI_CB_TASK_STACK_SZ    512
+static os_stack_t spi_cb_task_stack[SPI_CB_TASK_STACK_SZ];
+static struct os_task spi_cb_task_str;
+
+#ifdef SPI_SLAVE
+/* SPI Slave Task */
+// This task priority should be higher (number lower) than SPI_CB_TASK
+#define SPI_SLAVE_PRIO (3)
+#define SPI_SLAVE_STACK_SIZE    OS_STACK_ALIGN(1024)
+static os_stack_t spi_slave_task_stack[SPI_SLAVE_STACK_SIZE];
+static struct os_task spi_slave_task;
+#endif
+
+static void spi_ev_cb(struct os_event *);
+static struct os_eventq spi_cb_eventq;
+
+struct os_sem g_spi_sem;
+
+uint8_t g_spi_tx_buf[SPI_TXRX_LEN];
+uint8_t g_spi_rx_buf[SPI_TXRX_LEN];
+uint8_t g_spi_last_tx[SPI_TXRX_LEN];
+
 static struct os_event gpio_ev = {
     .ev_cb = button_interrupt_ev_cb,
 };
 
 static void button_interrupt_ev_cb(struct os_event *ev)
 {
-    // Event callback function.
-    assert(ev != NULL);
-
-    hal_gpio_toggle(BLINK_LED);
+    hal_gpio_toggle(BUTTON_LED);
 
 #ifdef SPI_MASTER
-    int rc;
     int i;
-    //g_spi_tx_buf[0] = 0x01;
     btn_cnt++;
     memset(g_spi_tx_buf, btn_cnt, SPI_TXRX_LEN);
-    //assert(hal_gpio_read(SPI_SS_PIN) == 1);
     hal_gpio_write(SPI_SS_PIN, 0);
-    rc = hal_spi_txrx(SPI_NUM, g_spi_tx_buf, g_spi_rx_buf, spi_cb_obj.txlen);
-    assert(!rc);
+    hal_spi_txrx(SPI_NUM, g_spi_tx_buf, g_spi_rx_buf, SPI_TXRX_LEN);
     hal_gpio_write(SPI_SS_PIN, 1);
 
     console_printf("Master transmitted: ");
-    for (i = 0; i < spi_cb_obj.txlen; i++) {
+    for (i = 0; i < SPI_TXRX_LEN; i++) {
         console_printf("%2x ", g_spi_tx_buf[i]);
     }
     console_printf("\n");
     console_printf("Master received: ");
-    for (i = 0; i < spi_cb_obj.txlen; i++) {
+    for (i = 0; i < SPI_TXRX_LEN; i++) {
         console_printf("%2x ", g_spi_rx_buf[i]);
     }
     console_printf("\n");
@@ -119,27 +120,6 @@ static void button_interrupt_task(void *arg)
     }
 }
 
-
-// Event queue example: https://mynewt.apache.org/latest/tutorials/os_fundamentals/event_queue.html
-//   Blinks one LED via a task
-//   Blinks another LED via a timed callout
-//   Blinks third LED on button press --- kept this
-// spitest - from apache-mynewt-core
-//    Blocking API can only be used on master
-//    Not quite sure whether blocking or non-blocking should be used...
-// Master has to "know" how big slave's data is...
-// Potentially Master will send some command data
-// Slave side - send all the data RTDOA_tag project prints out.  Will prob have to pre-define a max # of anchors...
-// How would a request/receive type SPI interface really work?
-//   Master sends request (ignore received slave data)
-//   Slave clears current SPI queue and sets ready bit to 0
-//   Master waits a bit, then loops sending a "Ready?" and looking at received ready bit yes/no
-//   When Slave is ready, set ready bit to 1 ... then immediately fill tx_buf with requested data ... ?
-//   If master received ready = 1, then sends a "retrieve" message to get the data
-//   The "ready" message is 
-
-
-
 void spi_cfg(int spi_num)
 {
     struct hal_spi_settings my_spi;
@@ -151,47 +131,50 @@ void spi_cfg(int spi_num)
     assert(hal_spi_config(spi_num, &my_spi) == 0);
 }
 
+static struct os_event spi_ev = {
+    .ev_cb = spi_ev_cb,
+};
 
-void spi_slave_irqs_handler(void *arg, int len)
+static void spi_ev_cb(struct os_event *ev)
 {
-    struct sblinky_spi_cb_arg *cb;
-
-    hal_gpio_toggle(BLINK_LED);
-
-    assert(arg == spi_cb_arg);
-    if (spi_cb_arg) {
-        cb = (struct sblinky_spi_cb_arg *)arg;
-        ++cb->transfers;
-        cb->tx_rx_bytes += len;
-        cb->txlen = len;
-    }
+    hal_gpio_toggle(SLAVE_LED);
 
     int i;
     console_printf("Slave received: ");
-    for (i = 0; i < spi_cb_obj.txlen; i++) {
+    for (i = 0; i < SPI_TXRX_LEN; i++) {
         console_printf("%2x ", g_spi_rx_buf[i]);
     }
     console_printf("\n");
     console_printf("Slave transmitted: ");
-    for (i = 0; i < spi_cb_obj.txlen; i++) {
-        console_printf("%2x ", g_spi_tx_buf[i]);
+    for (i = 0; i < SPI_TXRX_LEN; i++) {
+        console_printf("%2x ", g_spi_last_tx[i]);
     }
     console_printf("\n");
+}
+
+void spi_slave_irqs_handler(void *arg, int len)
+{
+    memcpy(g_spi_last_tx, g_spi_tx_buf, SPI_TXRX_LEN); // g_spi_tx_buf will be overwritten by main SPI slave task before SPI_CB task has chance to print it out
+    os_eventq_put(&spi_cb_eventq, &spi_ev);
 
     /* Post semaphore to task waiting for SPI slave */
+    // Adds a token to semaphore, allowing tasks waiting on it to continue.
     os_sem_release(&g_spi_sem);
 }
 
+static void spi_cb_task(void *arg)
+{
+    // All this task does is pull an item off the event queue and execute its callback.
+    while (1) {
+        os_eventq_run(&spi_cb_eventq);
+    }
+}
 
 
 void spis_task_handler(void *arg)
 {
-    //int rc;
-
-    spi_cb_arg = &spi_cb_obj;
-    spi_cb_obj.txlen = SPI_TXRX_LEN;
     spi_cfg(SPI_NUM);
-    hal_spi_set_txrx_cb(SPI_NUM, spi_slave_irqs_handler, spi_cb_arg);
+    hal_spi_set_txrx_cb(SPI_NUM, spi_slave_irqs_handler, NULL);
     hal_spi_enable(SPI_NUM);
 
     /* Make the default character 0x77 */
@@ -201,18 +184,15 @@ void spis_task_handler(void *arg)
      * Fill buffer with 0x33 for first transfer.
      */
     memset(g_spi_tx_buf, 0x33, SPI_TXRX_LEN);
-    //rc = hal_spi_txrx_noblock(SPI_NUM, g_spi_tx_buf, g_spi_rx_buf, SPI_TXRX_LEN);
     hal_spi_txrx_noblock(SPI_NUM, g_spi_tx_buf, g_spi_rx_buf, SPI_TXRX_LEN);
 
     while (1) {
         /* Wait for semaphore from ISR */
+        // "When a task desires exclusive access to the shared resource it requests the semaphore by calling os_sem_pend()"
         os_sem_pend(&g_spi_sem, OS_TIMEOUT_NEVER);
 
-        //memset(g_spi_tx_buf, 0x88, SPI_TXRX_LEN);
-        memcpy(g_spi_tx_buf, g_spi_rx_buf, spi_cb_obj.txlen); // send back whatever we last received
+        memcpy(g_spi_tx_buf, g_spi_rx_buf, SPI_TXRX_LEN); // send back whatever we last received
         g_spi_tx_buf[0] = g_spi_tx_buf[0] + 7;//modify first entry
-        //rc = hal_spi_txrx_noblock(SPI_NUM, g_spi_tx_buf, g_spi_rx_buf, SPI_TXRX_LEN);
-        //assert(rc == 0);
         hal_spi_txrx_noblock(SPI_NUM, g_spi_tx_buf, g_spi_rx_buf, SPI_TXRX_LEN);
     }
 }
@@ -232,24 +212,28 @@ void init_tasks(void)
                  button_interrupt_task_stack,
                  BUTTON_INTERRUPT_TASK_STACK_SZ);
 
+    /* SPI interrupt event queue */
+    os_eventq_init(&spi_cb_eventq);
 
-    hal_gpio_irq_init(BUTTON_1, my_gpio_irq, NULL, HAL_GPIO_TRIG_RISING, HAL_GPIO_PULL_UP);
-    hal_gpio_irq_enable(BUTTON_1);
+    // Task to process events from SPI interrupt
+    os_task_init(&spi_cb_task_str, "spi_cb_task",
+                 spi_cb_task, NULL,
+                 SPI_CB_TASK_PRIO, OS_WAIT_FOREVER,
+                 spi_cb_task_stack,
+                 SPI_CB_TASK_STACK_SZ);
 
-    hal_gpio_init_out(BLINK_LED, 1);
+    hal_gpio_irq_init(TRIGGER_BUTTON, my_gpio_irq, NULL, HAL_GPIO_TRIG_RISING, HAL_GPIO_PULL_UP);
+    hal_gpio_irq_enable(TRIGGER_BUTTON);
 
-    // Below - modified from spitest
-    os_stack_t *pstack;
-    (void)pstack;
-    pstack = malloc(sizeof(os_stack_t)*SPI_SEND_STACK_SIZE);
-    assert(pstack);
+    hal_gpio_init_out(BUTTON_LED, 1);
 
     /* Initialize global test semaphore */
-    os_sem_init(&g_spi_sem, 0);//need?
+    os_sem_init(&g_spi_sem, 0);
 
     #if defined(SPI_SLAVE)
-        os_task_init(&spi_send_task, "spis", spis_task_handler, NULL,
-                SPI_SEND_PRIO, OS_WAIT_FOREVER, pstack, SPI_SEND_STACK_SIZE);
+        hal_gpio_init_out(SLAVE_LED, 1);
+        os_task_init(&spi_slave_task, "spis", spis_task_handler, NULL,
+                SPI_SLAVE_PRIO, OS_WAIT_FOREVER, spi_slave_task_stack, SPI_SLAVE_STACK_SIZE);
     #endif
 
     #if defined(SPI_MASTER)
@@ -258,7 +242,6 @@ void init_tasks(void)
         spi_cfg(SPI_NUM);
         hal_spi_enable(SPI_NUM);
         hal_gpio_write(SPI_SS_PIN, 1);
-        spi_cb_obj.txlen = SPI_TXRX_LEN;
     #endif
 }
 
@@ -271,5 +254,5 @@ int main(int argc, char **argv)
     while (1) {
        os_eventq_run(os_eventq_dflt_get());
     }
-    assert(0);
+    assert(0);//should never reach here
 }
