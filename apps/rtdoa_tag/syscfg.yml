@@ -10,7 +10,7 @@ syscfg.vals:
     # Route console to RTT
     CONSOLE_UART: 1
     CONSOLE_RTT: 0
-    CONSOLE_UART_BAUD: 1000000
+    CONSOLE_UART_BAUD: 115200
     CONSOLE_UART_TX_BUF_SIZE: 1024
     CONSOLE_UART_RX_BUF_SIZE: 256
     CONSOLE_ECHO: 1
@@ -53,6 +53,8 @@ syscfg.vals:
     OS_LATENCY: 2000
     XTALT_GUARD: 0x60
 
+    RTDOABH_COMPACT_MEAS: 0
+
     # Config interface
     CONFIG_NFFS: 0
     CONFIG_FCB: 1
@@ -65,6 +67,7 @@ syscfg.vals:
     LSM6DSL_ONB: 1
     LIS2MDL_ONB: 1
     LPS22HB_ONB: 1
+    LIS2DH12_ONB: 1
 
     NCBWIFI_ESP_PASSTHROUGH: 0
     ESP12F_ENABLED: 0
