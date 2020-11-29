@@ -38,7 +38,7 @@ int main(int argc, char **argv){
     sysinit();
 
 #if MYNEWT_VAL(BLE_ENABLED)
-    ble_init(0xABE16);
+    ble_init(0xAAA01);
 #endif
 
     while (1) {

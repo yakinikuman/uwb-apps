@@ -17,9 +17,9 @@
 # under the License.
 #
 
-pkg.name: apps/ota_spi
+pkg.name: apps/ble_ota
 pkg.type: app
-pkg.description: "Skeleton for BLE OTA updates and SPI slave connectivity"
+pkg.description: "Skeleton for BLE OTA updates"
 pkg.author: 
 pkg.homepage: 
 pkg.keywords:
