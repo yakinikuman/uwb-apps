@@ -4,6 +4,7 @@
 #include <bsp/bsp.h>
 #include <hal/hal_gpio.h>
 #include "hal/hal_spi.h"
+#include "hal/hal_bsp.h"
 #include <console/console.h>
 #include <os/os.h>
 #include <sysinit/sysinit.h>
@@ -17,6 +18,11 @@
 // set SPI_xx_SLAVE in target syscfg.yml to designate slave.
 // On button push, master will toggle LED and send a message via SPI.
 // On SPI message receipt, slave will alter the received message to send out during next SPI transfer.
+// BLE OTA (Over-the-Air) image update support is enabled.
+
+#if MYNEWT_VAL(BLE_ENABLED)
+#include "bleprph/bleprph.h"
+#endif
 
 #if MYNEWT_VAL(SPI_0_MASTER) || MYNEWT_VAL(SPI_1_MASTER) || MYNEWT_VAL(SPI_2_MASTER)
 #define SPI_MASTER 1
@@ -248,6 +254,10 @@ void init_tasks(void)
 int main(int argc, char **argv)
 {
     sysinit();
+
+    #if MYNEWT_VAL(BLE_ENABLED)
+    ble_init(0xABCD);
+    #endif
 
     init_tasks();
 
