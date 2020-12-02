@@ -17,33 +17,19 @@
  * under the License.
  */
 
-#include <assert.h>
-#include <string.h>
-#include <stdio.h>
-#include <math.h>
 #include "sysinit/sysinit.h"
 #include "os/os.h"
-#include "bsp/bsp.h"
-#include "hal/hal_gpio.h"
-#include "hal/hal_bsp.h"
-
-#if MYNEWT_VAL(BLE_ENABLED)
 #include "bleprph/bleprph.h"
-#endif
-
 
 int main(int argc, char **argv){
-    int rc;
 
     sysinit();
 
-#if MYNEWT_VAL(BLE_ENABLED)
     ble_init(0xAAA01);
-#endif
 
     while (1) {
         os_eventq_run(os_eventq_dflt_get());
     }
-    assert(0);
-    return rc;
+
+    return 0;
 }
