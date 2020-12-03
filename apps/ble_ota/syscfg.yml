@@ -6,6 +6,7 @@ syscfg.vals:
     
     BLE_PREFIX: '"bleota"'
 
+    LOG_LEVEL: 2
 
 
     
